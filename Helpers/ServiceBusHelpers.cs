@@ -85,48 +85,21 @@ namespace dotnet_servicebus.Helpers
             return adminClient;
         }
 
-        public static ServiceBusClient CreateClientFromNamedKey(string fullyQualifiedNamespace, string keyName, string key)
-        {
-            Console.WriteLine($"Create client using: FQN: {fullyQualifiedNamespace}, key name: {keyName}, and key: {key}");
-            Console.WriteLine();
-            var credential = new AzureNamedKeyCredential(keyName, key);
-            var client = new ServiceBusClient(fullyQualifiedNamespace, credential);
-
-            return client;
-        }
-
         public static ServiceBusClient CreateClientFromSasSignature(string fullyQualifiedNamespace, string sasSignature)
         {
-            Console.WriteLine($"Create client using FQN {fullyQualifiedNamespace} and SAS signature: {sasSignature}");
+            Console.WriteLine($"Create client using: FQN {fullyQualifiedNamespace} and SAS");
             Console.WriteLine();
+
             var credential = new AzureSasCredential(sasSignature);
             var client = new ServiceBusClient(fullyQualifiedNamespace, credential);
 
             return client;
         }
 
-        public static Task<string> CreateSasTokenManually(
-            string resourceUri,
-            string keyName,
-            string key,
-            TimeSpan validityDuration
-        )
-        {
-            // https://docs.microsoft.com/en-us/rest/api/eventhub/generate-sas-token#c
-            var sinceEpoch = DateTime.UtcNow - new DateTime(1970, 1, 1);
-            var expiry = Convert.ToString((int)sinceEpoch.TotalSeconds + validityDuration.TotalSeconds);
-
-            string stringToSign = HttpUtility.UrlEncode(resourceUri) + "\n" + expiry;
-            var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(key));
-            var signature = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(stringToSign)));
-            var sasToken = string.Format(CultureInfo.InvariantCulture, "SharedAccessSignature sr={0}&sig={1}&se={2}&skn={3}", HttpUtility.UrlEncode(resourceUri), HttpUtility.UrlEncode(signature), expiry, keyName);
-
-            return Task.FromResult(sasToken);
-        }
-
         public static async Task<string> CreateSasTokenUsingProvider(
             string endpoint,
             string entityPath,
+            string subscriptionName,
             string keyName,
             string key,
             TimeSpan validityDuration,
@@ -135,59 +108,24 @@ namespace dotnet_servicebus.Helpers
         {
             // https://github.com/Azure/azure-service-bus/blob/31a0018c122fb39e7016a25706023b45d9622374/samples/DotNet/Microsoft.Azure.ServiceBus/ManagingEntities/SASAuthorizationRule/Program.cs#L70-L72
             var sasTokenProvider = (SharedAccessSignatureTokenProvider)TokenProvider.CreateSharedAccessSignatureTokenProvider(keyName, key, validityDuration, tokenScope);
-            var tokenAudience = new Uri(new Uri(endpoint), EntityNameHelper.FormatSubscriptionPath(entityPath, "mySub")).ToString();
+            Console.WriteLine($"Input Endpoint: {endpoint}");
+            var path = string.IsNullOrEmpty(subscriptionName)
+                ? entityPath
+                : EntityNameHelper.FormatSubscriptionPath(entityPath, subscriptionName);
+            var tokenAudienceUri = new Uri(new Uri(endpoint), path);
+            Console.WriteLine($"Token Audience: {tokenAudienceUri}");
 
-            var sasToken = await sasTokenProvider.GetTokenAsync(tokenAudience, validityDuration);
-            var serviceBusConnectionStringBuilder = new ServiceBusConnectionStringBuilder(endpoint, entityPath, sasToken.TokenValue);
-            var namespaceConnectionStringFromSas = serviceBusConnectionStringBuilder.GetNamespaceConnectionString();
-            var entityConnectionStringFromSas = serviceBusConnectionStringBuilder.GetEntityConnectionString();
-
+            var sasToken = await sasTokenProvider.GetTokenAsync(tokenAudienceUri.ToString(), validityDuration);
             return sasToken.TokenValue;
         }
 
-        public static (string, string) BuildSignature(
-            string fullyQualifiedNamespace,
-            string entityName,
-            string sharedAccessKeyName,
-            string sharedAccessKey,
-            DateTimeOffset expirationTime
+        public static string BuildAudience(
+            string fullyQualifiedNamespace
         )
         {
-            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(sharedAccessKey));
-
-            var audience = BuildAudience(fullyQualifiedNamespace, entityName);
-            var encodedAudience = WebUtility.UrlEncode(audience);
-            var expiration = Convert.ToString(ConvertToUnixTime(expirationTime), CultureInfo.InvariantCulture);
-            var signature = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes($"{encodedAudience}\n{expiration}")));
-
-            var sasSignature = string.Format(CultureInfo.InvariantCulture, "{0} {1}={2}&{3}={4}&{5}={6}&{7}={8}",
-                "SharedAccessSignature",
-                "sr",
-                encodedAudience,
-                "sig",
-                WebUtility.UrlEncode(signature),
-                "se",
-                WebUtility.UrlEncode(expiration),
-                "skn",
-                WebUtility.UrlEncode(sharedAccessKeyName));
-
-            return (sasSignature, audience);
-        }
-
-        private static string BuildAudience(
-            string fullyQualifiedNamespace,
-            string entityName
-        )
-        {
-            if (string.IsNullOrEmpty(fullyQualifiedNamespace))
-            {
-                return string.Empty;
-            }
-
             var builder = new UriBuilder(fullyQualifiedNamespace)
             {
-                Scheme = "amqps",
-                Path = entityName,
+                Scheme = "https",
                 Port = -1,
                 Fragment = string.Empty,
                 Password = string.Empty,
@@ -197,10 +135,5 @@ namespace dotnet_servicebus.Helpers
             builder.Path = builder.Path.TrimEnd('/');
             return builder.Uri.AbsoluteUri.ToLowerInvariant();
         }
-
-        private static long ConvertToUnixTime(DateTimeOffset dateTimeOffset) =>
-            Convert.ToInt64((dateTimeOffset - Epoch).TotalSeconds);
-
-        private static readonly DateTimeOffset Epoch = new DateTimeOffset(1970, 1, 1, 0, 0, 0, TimeSpan.Zero);
     }
 }

@@ -14,7 +14,14 @@ public class ListSubscriptionsCommand
         Option topicNameOption
 )
     {
-        var command = new Command("listSubscriptions", "List Subscriptions");
+        var command = new Command("listSubscriptions", "List Subscriptions")
+        {
+            connectionStringOption,
+            fqnOption,
+            keyNameOption,
+            keyOption,
+            topicNameOption,
+        };
         command.AddAlias("ls");
         command.SetHandler(async (
             string connectionString,
@@ -28,6 +35,10 @@ public class ListSubscriptionsCommand
             var cs = ServiceBusHelpers.GetConnectionStringFromOptions(connectionString, fqn, topicName, keyName, key);
             await ListSubscriptions(cs, topicName);
         },
+        connectionStringOption,
+        fqnOption,
+        keyNameOption,
+        keyOption,
         topicNameOption);
 
         return command;

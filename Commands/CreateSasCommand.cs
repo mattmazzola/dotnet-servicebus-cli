@@ -38,38 +38,13 @@ public class CrateSasCommand
             Console.WriteLine($"Audience:\t{TokenScope.Namespace}");
             Console.WriteLine($"Duraiont:\t{validityDuration.TotalMinutes} minutes");
             Console.WriteLine();
-            Console.WriteLine($"1. Creating SAS Signature manually:");
-            Console.WriteLine();
-
-            var sasTokenManual = await ServiceBusHelpers.CreateSasTokenManually(
-                resourceUri,
-                keyName,
-                key,
-                validityDuration
-            );
-
-            Console.WriteLine(sasTokenManual);
-            Console.WriteLine();
-            Console.WriteLine($"2. Creating SAS Signature manually (From GitHub Suggestion):");
-            Console.WriteLine();
-
-            var (sasTokenManualGithub, audience) = ServiceBusHelpers.BuildSignature(
-                fqn,
-                entityPath,
-                keyName,
-                key,
-                DateTimeOffset.Now.Add(validityDuration)
-            );
-
-            Console.WriteLine($"Audience: {audience}");
-            Console.WriteLine(sasTokenManualGithub);
-            Console.WriteLine();
-            Console.WriteLine($"3. Generate SAS Signature using TokenProvider");
+            Console.WriteLine($"Generate SAS Signature using TokenProvider");
             Console.WriteLine();
 
             var sasToken = await ServiceBusHelpers.CreateSasTokenUsingProvider(
                 resourceUri,
                 "games",
+                "mySub",
                 keyName,
                 key,
                 validityDuration,

@@ -1,12 +1,8 @@
 ﻿using Azure.Messaging.ServiceBus;
 using dotnet_servicebus.Helpers;
 using dotnet_servicebus.Models;
-using Microsoft.Azure.ServiceBus;
-using Microsoft.Azure.ServiceBus.Core;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using System.CommandLine;
-using System.Text;
 
 namespace dotnet_servicebus.Commands;
 
@@ -26,23 +22,23 @@ public class SendCommand
             getDefaultValue: () => 3);
         numOfMessagesToSendOption.AddAlias("-m");
 
-        var agentIdOption = new Option<string>(
+        var agentSubscriptionFilterValueOption = new Option<string>(
             name: "--agentId",
-            description: "Value of agentId property on messsages",
+            description: "Value of agentSubscriptionFilterValue property on messsages",
             getDefaultValue: () => "f8e5cd9c");
-        agentIdOption.AddAlias("-ag");
+        agentSubscriptionFilterValueOption.AddAlias("-ag");
 
-        var useOldLib = new Option<bool>(
-            name: "--use-old-lib",
-            description: "Use deprecrated Microsoft.Azure.ServiceBus lib",
-            getDefaultValue: () => false);
-        useOldLib.AddAlias("-l");
+        var sourceOption = new Option<string>(
+            name: "--source",
+            description: "Value of source property on messsages",
+            getDefaultValue: () => "MYSOURCE");
+        sourceOption.AddAlias("-so");
 
         var command = new Command("send", "Send Messages.")
         {
             numOfMessagesToSendOption,
-            agentIdOption,
-            useOldLib
+            agentSubscriptionFilterValueOption,
+            sourceOption,
         };
 
         command.AddAlias("s");
@@ -53,13 +49,14 @@ public class SendCommand
             string key,
             string topicName,
             int numOfMessages,
-            string agentId
+            string agentId,
+            string source
         ) => {
             ServiceBusHelpers.PrintParams(connectionString, fqn, keyName, key, topicName);
             var cs = ServiceBusHelpers.GetConnectionStringFromOptions(connectionString, fqn, topicName, keyName, key);
             var client = ServiceBusHelpers.CreateClientFromConnectionString(cs);
 
-            await SendAsync(client, topicName, numOfMessages, agentId);
+            await SendAsync(client, topicName, numOfMessages, agentId, source);
         },
         connectionStringOption,
         fqnOption,
@@ -67,7 +64,8 @@ public class SendCommand
         keyOption,
         topicNameOption,
         numOfMessagesToSendOption,
-        agentIdOption
+        agentSubscriptionFilterValueOption,
+        sourceOption
         );
 
         return command;
@@ -77,22 +75,34 @@ public class SendCommand
         ServiceBusClient client,
         string topicName,
         int numOfMessagesToSend,
-        string agentId,
+        string agentSubscriptionFilterValue,
+        string source,
         bool closeConnections = true
     )
     {
         var sender = client.CreateSender(topicName);
 
         Console.WriteLine($"Sending {numOfMessagesToSend} messages to topic {topicName}...");
+        Console.WriteLine();
+
         using ServiceBusMessageBatch messageBatch = await sender.CreateMessageBatchAsync();
+
+        var tournamentId = Guid.NewGuid().ToString();
+        var taskId = Guid.NewGuid().ToString();
+        var gameId = Guid.NewGuid().ToString();
 
         for (int i = 1; i <= numOfMessagesToSend; i++)
         {
             var gameEvent = new Event()
             {
                 EventType = "PlayerMove",
-                Message = $"{i} - {DateTime.Now.ToShortTimeString()}",
-                AgentId = agentId
+                TournamentId = tournamentId,
+                TaskId = taskId,
+                GameId = gameId,
+                RoleId = "Role1",
+                GroupId = "Group1",
+                Source = source,
+                AgentSubscriptionFilterValue = agentSubscriptionFilterValue
             };
 
             var messageString = JsonConvert.SerializeObject(gameEvent);
@@ -100,8 +110,8 @@ public class SendCommand
             {
                 ApplicationProperties =
                 {
-                    ["agentId"] = agentId,
-                    ["groupId"] = agentId,
+                    ["agentSubscriptionFilterValue"] = agentSubscriptionFilterValue,
+                    ["source"] = source,
                 }
             };
 
@@ -113,7 +123,10 @@ public class SendCommand
             }
             else
             {
-                Console.WriteLine($"Added message {messageString} to the batch");
+                Console.WriteLine($"Added message {i} to the batch");
+                var mString = JsonConvert.SerializeObject(gameEvent, Formatting.Indented);
+                Console.WriteLine(mString);
+                Console.WriteLine();
             }
         }
 
@@ -133,42 +146,7 @@ public class SendCommand
                 await client.DisposeAsync();
             }
         }
-    }
 
-    public static async Task SendAsyncOldLib(
-        string connectionString,
-        string topicName,
-        int numOfMessagesToSend
-    )
-    {
-        Console.WriteLine($"Connecting to service bus using: {connectionString}");
-        var csStringBuilder = new ServiceBusConnectionStringBuilder(connectionString);
-        var connection = new ServiceBusConnection(csStringBuilder);
-        var sender = new MessageSender(connection, topicName);
-
-        try
-        {
-            Console.WriteLine($"Sending {numOfMessagesToSend} messages to topic {topicName}...");
-            for (int i = 1; i <= numOfMessagesToSend; i++)
-            {
-                // Create message
-                var messageJson = new JObject();
-                messageJson["message"] = $"Message {i} - {DateTime.Now}";
-                messageJson["agentId"] = $"agent{i}";
-
-                var messageString = JsonConvert.SerializeObject(messageJson);
-                var bytes = Encoding.UTF8.GetBytes(messageString);
-                var message = new Message(bytes);
-
-                await sender.SendAsync(message);
-            }
-        }
-        finally
-        {
-            // Calling DisposeAsync on client types is required to ensure that network
-            // resources and other unmanaged objects are properly cleaned up.
-            await sender.CloseAsync();
-            await connection.CloseAsync();
-        }
+        Console.WriteLine();
     }
 }

@@ -1,45 +1,67 @@
 ﻿using Azure.Messaging.ServiceBus.Administration;
 using dotnet_servicebus.Helpers;
-using Microsoft.Azure.ServiceBus;
 using Microsoft.Azure.ServiceBus.Primitives;
 using System.CommandLine;
-using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
-using System.Web;
 
 namespace dotnet_servicebus.Commands;
 
 public class FullSequenceCommand
 {
     public static Command GetCommand(
+        Option eventHubConnectionStringOption,
+        Option eventHubFqnOption,
+        Option eventHubSendListenKeyNameOption,
+        Option eventHubSendListenKeyOption,
+        Option eventHubNameOption,
         Option connectionStringOption,
         Option fqnOption,
-        Option keyNameOption,
-        Option keyOption,
+        Option manageKeyNameOption,
+        Option manageKeyOption,
+        Option listenKeyNameOption,
+        Option listenKeyOption,
         Option topicNameOption,
         Option subscriptionNameOption
     )
     {
+        var agentSubscriptionFilterValueOption = new Option<string>(
+            name: "--agentSubscriptionFilterValue",
+            description: "Agent Subscription Filter Value");
+        agentSubscriptionFilterValueOption.AddAlias("-asfv");
+
         var command = new Command("runFullSequence", "Run Full Sequence, Create SAS Token, Send")
         {
             subscriptionNameOption,
+            agentSubscriptionFilterValueOption,
         };
         command.AddAlias("full");
         command.SetHandler(async (
+            string eventHubConnectionString,
+            string eventHubFqn,
+            string eventHubSendListenKeyName,
+            string eventHubSendListenKey,
+            string eventHubName,
             string connectionString,
             string fqn,
-            string keyName,
-            string key,
+            string manageKeyName,
+            string manageKey,
+            string listenKeyName,
+            string listenKey,
             string topicName,
-            string subscriptionName
+            string subscriptionName,
+            string agentSubscriptionFilterValue
             ) =>
         {
-            ServiceBusHelpers.PrintParams(connectionString, fqn, keyName, key, topicName);
-            var cs = ServiceBusHelpers.GetConnectionStringFromOptions(connectionString, fqn, topicName, keyName, key);
+            Console.WriteLine("Event Hub Parameters:");
+            ServiceBusHelpers.PrintParams(eventHubConnectionString, eventHubFqn, eventHubSendListenKeyName, eventHubSendListenKey, eventHubName);
+            var eventHubCs = ServiceBusHelpers.GetConnectionStringFromOptions(eventHubConnectionString, eventHubFqn, eventHubName, eventHubSendListenKeyName, eventHubSendListenKey);
 
-            var adminClient = ServiceBusHelpers.CreateAdminClientFromConnectionString(cs);
-            var topicsAsyncPageable = adminClient.GetTopicsAsync();
+            Console.WriteLine("Service Bus Parameters:");
+            ServiceBusHelpers.PrintParams(connectionString, fqn, manageKeyName, manageKey, topicName);
+
+            var serviceBusCs = ServiceBusHelpers.GetConnectionStringFromOptions(connectionString, fqn, topicName, manageKeyName, manageKey);
+
+            var sbAdminClient = ServiceBusHelpers.CreateAdminClientFromConnectionString(serviceBusCs);
+            var topicsAsyncPageable = sbAdminClient.GetTopicsAsync();
             var topicsProperties = await topicsAsyncPageable.ToListAsync();
 
             var doesTopicExist = topicsProperties.Any(t => t.Name == topicName);
@@ -53,12 +75,18 @@ public class FullSequenceCommand
                 {
                 };
                 
-                var createdTopic = await adminClient.CreateTopicAsync(topicOptions);
+                var createdTopic = await sbAdminClient.CreateTopicAsync(topicOptions);
                 Console.WriteLine($"Created Topic {createdTopic.Value.Name}!");
             }
 
 
-            var subscriptionsAsyncPageable = adminClient.GetSubscriptionsAsync(topicName);
+            var eventHubAudience = $"https://{eventHubFqn}";
+            var audience = $"https://{fqn}";
+            var validityDuration = TimeSpan.FromDays(365);
+            var numOfMessagesToSend = 5;
+            var source = "dotnet-servicebus-cli";
+
+            var subscriptionsAsyncPageable = sbAdminClient.GetSubscriptionsAsync(topicName);
             var subscriptions = await subscriptionsAsyncPageable.ToListAsync();
 
             var doesSubscriptionExist = subscriptions.Any(s => s.SubscriptionName == subscriptionName);
@@ -74,97 +102,79 @@ public class FullSequenceCommand
                     AutoDeleteOnIdle = TimeSpan.FromDays(1),
                 };
 
-                var sqlRuleFilter = new SqlRuleFilter("groupId='MYGROUP2'");
+                var sqlRuleFilter = new SqlRuleFilter($"service != 'AgentService' AND agentSubscriptionFilter = '{agentSubscriptionFilterValue}'");
                 var ruleOptions = new CreateRuleOptions("singleGroup", sqlRuleFilter);
-                var createdSub = await adminClient.CreateSubscriptionAsync(subOptions, ruleOptions);
+                var createdSub = await sbAdminClient.CreateSubscriptionAsync(subOptions, ruleOptions);
                 Console.WriteLine($"Created Subscription {createdSub.Value.SubscriptionName}!");
             }
 
-            var entityPath = topicName;
-            var validityDuration = TimeSpan.FromMinutes(30);
-            var sasKeyName = "myKey";
-            var numOfMessages = 5;
-            var groupId = "MYGROUP2";
-
-            Console.WriteLine($"Generate SAS Signature using params:");
-            Console.WriteLine($"FQN:\t{fqn}");
-            Console.WriteLine($"EntityPath:\t{entityPath}");
-            Console.WriteLine($"Audience:\t{TokenScope.Namespace}");
+            Console.WriteLine();
+            Console.WriteLine($"Generate EvenHub SAS Signature using params:");
+            Console.WriteLine($"Audience:\t{eventHubAudience}");
             Console.WriteLine($"Duration:\t{validityDuration.TotalMinutes} minutes");
             Console.WriteLine();
-            Console.WriteLine($"Creating SAS Signature from TokenProvider:");
+            Console.WriteLine($"Creating EvenHub SAS Signature from TokenProvider:");
             Console.WriteLine();
 
-            var (sasTokenManualGithub, audience) = ServiceBusHelpers.BuildSignature(
-                fqn,
-                entityPath,
-                keyName,
-                key,
-                DateTimeOffset.Now.Add(validityDuration)
+            var eventHubSendSasToken = await ServiceBusHelpers.CreateSasTokenUsingProvider(
+                eventHubAudience,
+                eventHubName,
+                null,
+                eventHubSendListenKeyName,
+                eventHubSendListenKey,
+                validityDuration,
+                TokenScope.Entity
             );
+            Console.WriteLine(eventHubSendSasToken);
+            Console.WriteLine();
+            var sendClient = ServiceBusHelpers.CreateClientFromSasSignature(eventHubFqn, eventHubSendSasToken);
+            await SendCommand.SendAsync(sendClient, eventHubName, numOfMessagesToSend, agentSubscriptionFilterValue, source, closeConnections: false);
 
-            var sasFromTokenProvider = await ServiceBusHelpers.CreateSasTokenUsingProvider(audience, entityPath, keyName, key, validityDuration, TokenScope.Namespace);
+            // Wait to give time for Stream Analytics to transfer events from Event Hub to Service Bus
+            var saWaitTime = TimeSpan.FromSeconds(5);
+            Console.WriteLine($"Waiting {saWaitTime.Seconds} seconds for Stream Analytics:");
+            await Task.Delay(saWaitTime);
 
-            Console.WriteLine(sasTokenManualGithub);
+            Console.WriteLine();
+            Console.WriteLine($"Generate Service Bus SAS Signature using params:");
+            Console.WriteLine($"Audience:\t{audience}");
+            Console.WriteLine($"Duration:\t{validityDuration.TotalMinutes} minutes");
+            Console.WriteLine();
+            Console.WriteLine($"Creating Service Bus SAS Signature from TokenProvider:");
+            Console.WriteLine();
+            var listenSasToken = await ServiceBusHelpers.CreateSasTokenUsingProvider(
+                audience,
+                topicName,
+                subscriptionName,
+                //manageKeyName,
+                //manageKey,
+                listenKeyName,
+                listenKey,
+                validityDuration,
+                TokenScope.Entity
+            );
+            Console.WriteLine(listenSasToken);
             Console.WriteLine();
 
-            var client = ServiceBusHelpers.CreateClientFromSasSignature(fqn, sasFromTokenProvider);
-            await SendCommand.SendAsync(client, topicName, numOfMessages, groupId, closeConnections: false);
-            await ReceiveCommand.ReceiveAsync(client, topicName, subscriptionName, durationSeconds: 5);
+            var listenClient = ServiceBusHelpers.CreateClientFromSasSignature(fqn, listenSasToken);
+            await ReceiveCommand.ReceiveAsync(listenClient, topicName, subscriptionName, durationSeconds: 2);
         },
+        eventHubConnectionStringOption,
+        eventHubFqnOption,
+        eventHubSendListenKeyNameOption,
+        eventHubSendListenKeyOption,
+        eventHubNameOption,
         connectionStringOption,
         fqnOption,
-        keyNameOption,
-        keyOption,
+        manageKeyNameOption,
+        manageKeyOption,
+        listenKeyNameOption,
+        listenKeyOption,
         topicNameOption,
-        subscriptionNameOption
+        subscriptionNameOption,
+        agentSubscriptionFilterValueOption
         );
 
         return command;
-    }
-
-    static Task<string> CreateSasTokenManually(
-        string resourceUri,
-        string keyName,
-        string key,
-        TimeSpan validityDuration
-    )
-    {
-        // https://docs.microsoft.com/en-us/rest/api/eventhub/generate-sas-token#c
-        var sinceEpoch = DateTime.UtcNow - new DateTime(1970, 1, 1);
-        var expiry = Convert.ToString((int)sinceEpoch.TotalSeconds + validityDuration.TotalSeconds);
-
-        string stringToSign = HttpUtility.UrlEncode(resourceUri) + "\n" + expiry;
-        var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(key));
-        var signature = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(stringToSign)));
-        var sasToken = string.Format(CultureInfo.InvariantCulture, "SharedAccessSignature sr={0}&sig={1}&se={2}&skn={3}", HttpUtility.UrlEncode(resourceUri), HttpUtility.UrlEncode(signature), expiry, keyName);
-
-        return Task.FromResult(sasToken);
-    }
-
-    static async Task<(string, string, string)> CreateSasTokenUsingProvider(
-        string endpoint,
-        string entityPath,
-        string keyName,
-        string key,
-        TimeSpan validityDuration,
-        TokenScope tokenScope
-    )
-    {
-        // https://github.com/Azure/azure-service-bus/blob/31a0018c122fb39e7016a25706023b45d9622374/samples/DotNet/Microsoft.Azure.ServiceBus/ManagingEntities/SASAuthorizationRule/Program.cs#L70-L72
-        var sasTokenProvider = (SharedAccessSignatureTokenProvider)TokenProvider.CreateSharedAccessSignatureTokenProvider(keyName, key, validityDuration, tokenScope);
-        var tokenAudience = new Uri(new Uri(endpoint), EntityNameHelper.FormatSubscriptionPath(entityPath, "mySub")).ToString();
-
-        Console.WriteLine($"Generate token for endpoint: {endpoint} and audience: {tokenAudience} for {validityDuration.TotalMinutes} minutes");
-        var sasToken = await sasTokenProvider.GetTokenAsync(tokenAudience, validityDuration);
-        var serviceBusConnectionStringBuilder = new ServiceBusConnectionStringBuilder(endpoint, entityPath, sasToken.TokenValue);
-        var namespaceConnectionStringFromSas = serviceBusConnectionStringBuilder.GetNamespaceConnectionString();
-        var entityConnectionStringFromSas = serviceBusConnectionStringBuilder.GetEntityConnectionString();
-
-        return (
-            sasToken.TokenValue,
-            namespaceConnectionStringFromSas,
-            entityConnectionStringFromSas
-        );
     }
 }

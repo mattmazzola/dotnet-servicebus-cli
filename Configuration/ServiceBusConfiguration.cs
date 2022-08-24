@@ -8,9 +8,13 @@ public sealed class ServiceBusConfiguration
 
     public string? FullyQualifiedNamespace { get; init; }
 
-    public string? SharedAccessKeyName { get; init; }
+    public string? ManageSharedAccessKeyName { get; init; }
 
-    public string? SharedAccessKey { get; init; }
+    public string? ManageSharedAccessKey { get; init; }
+
+    public string? ListenSharedAccessKeyName { get; init; }
+
+    public string? ListenSharedAccessKey { get; init; }
 
     public string? TopicName { get; init; }
 
