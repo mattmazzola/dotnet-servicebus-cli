@@ -66,5 +66,5 @@ dotnet run r agent-31ca002b-ee33-46f6-b51f-c0d60113ec3f -t mattm-games -d 3
 ### Running Latency Test
 
 ```dotnetcli
-dotnet run lat -m 1000 -cg agent1 -st 10
+dotnet run lat -n 300 -m 10 -cg agent1 -st 5
 ```

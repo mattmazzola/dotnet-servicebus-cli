@@ -18,6 +18,14 @@ public class ReceivedEvent
             return EventData.EnqueuedTime - DateTimeOffset.Parse(EventBody.ProducedAtDatetime);
         }
     }
+    
+    public TimeSpan EnqueuedReceivedLatency
+    {
+        get
+        {
+            return ReceivedDatetimeOffset - EventData.EnqueuedTime;
+        }
+    }
 
     public TimeSpan ProducedReceivedLatency
     {

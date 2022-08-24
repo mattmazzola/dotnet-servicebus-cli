@@ -88,6 +88,9 @@ public class LatencyTestCommand
             var eventHubProducerClient = new EventHubProducerClient(eventHubConnectionString);
             Console.WriteLine($"Create ProducerClient for EventHub: {eventHubProducerClient.FullyQualifiedNamespace}");
 
+            var stopWatchEventCreation = new Stopwatch();
+            stopWatchEventCreation.Start();
+
             var eventsToSend = new Queue<EventData>();
             var tournamentId = Guid.NewGuid().ToString();
             var taskId = Guid.NewGuid().ToString();
@@ -111,8 +114,13 @@ public class LatencyTestCommand
                 var testEventJson = JsonConvert.SerializeObject(testEvent);
                 var eventData = new EventData(Encoding.UTF8.GetBytes(testEventJson));
                 eventData.Properties["gameId"] = gameId;
+                eventData.Properties["eventIndex"] = i;
                 eventsToSend.Enqueue(eventData);
             }
+
+            stopWatchEventCreation.Stop();
+
+            Console.WriteLine($"Created {numOfEvents} events in {stopWatchEventCreation.Elapsed}");
 
             Console.WriteLine($"Sending {numOfEvents} events...");
             var stopWatch = new Stopwatch();
@@ -143,7 +151,10 @@ public class LatencyTestCommand
             Console.WriteLine($"Sent and received {partitionIdToEvents.Values.SelectMany(x => x).Count()} events in {stopWatch.Elapsed.TotalSeconds} seconds.");
 
             // Save Events
-            var csvString = GetCsvStringFromEventAnalysis();
+            var latencyTestResultsFileName = $"LatencyTest_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.csv";
+            Console.WriteLine($"Writing {latencyTestResultsFileName} CSV file...");
+
+            var (csvString, averageEnqueueTimespan, averageReceiveTimespan) = GetCsvStringFromEventAnalysis();
             var currentDirectory = Directory.GetCurrentDirectory();
             var latencyTestResultsDirectory = Path.Combine(currentDirectory, "LatencyTestResults");
 
@@ -152,10 +163,11 @@ public class LatencyTestCommand
                 Directory.CreateDirectory(latencyTestResultsDirectory);
             }
 
-            var latencyTestResultsFileName = $"LatencyTest_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.csv";
             var latencyTestResultsFilePath = Path.Combine(latencyTestResultsDirectory, latencyTestResultsFileName);
             File.WriteAllText(latencyTestResultsFilePath, csvString);
             Console.WriteLine($"Write file to {latencyTestResultsFilePath}");
+            Console.WriteLine($"Average Enqueue: {averageEnqueueTimespan}");
+            Console.WriteLine($"Average Receive: {averageReceiveTimespan}");
         },
         blobStorageConnectionStringOption,
         blobStorageContainerNameOption,
@@ -224,20 +236,28 @@ public class LatencyTestCommand
         return batches;
     }
 
-    public static string GetCsvStringFromEventAnalysis()
+    public static (string, TimeSpan, TimeSpan) GetCsvStringFromEventAnalysis()
     {
         // CSV Headers
-        var csvString = $"Sequence Id, Event Id, Produced At, Enqueued At, Received At, Produced Enqueued Latency, Produced Received Latency\n";
+        var csvString = $"Event Index, Sequence Id, Event Id, Produced At, Enqueued At, Received At, Produced Enqueued Latency, Enqueued Received Latency, Produced Received Latency\n";
 
         // All events should only be from single partition since they all have game game id, but we get from all partititions anyways for completeness
         var receivedEvents = partitionIdToEvents.Values.SelectMany(x => x);
+        var averageEnqueueLatencyMs = receivedEvents
+            .Select(re => re.ProducedEnqueuedLatency.TotalMilliseconds)
+            .Average();
+        var averageEnqueueLatency = TimeSpan.FromMilliseconds(averageEnqueueLatencyMs);
+        var averageReceiveLatencyMs = receivedEvents
+            .Select(re => re.ProducedReceivedLatency.TotalMilliseconds)
+            .Average();
+        var averageReceiveLatency = TimeSpan.FromMilliseconds(averageReceiveLatencyMs);
 
         foreach (var receivedEvent in receivedEvents)
         {
-            csvString += $"{receivedEvent.EventData.SequenceNumber}, {receivedEvent.EventBody.Id}, {receivedEvent.EventBody.ProducedAtDatetime:0}, {receivedEvent.EventData.EnqueuedTime:O}, {receivedEvent.ReceivedDatetimeOffset:O}, {receivedEvent.ProducedEnqueuedLatency}, {receivedEvent.ProducedReceivedLatency}\n";
+            csvString += $"{receivedEvent.EventData.Properties["eventIndex"]}, {receivedEvent.EventData.SequenceNumber}, {receivedEvent.EventBody.Id}, {receivedEvent.EventBody.ProducedAtDatetime:0}, {receivedEvent.EventData.EnqueuedTime:O}, {receivedEvent.ReceivedDatetimeOffset:O}, {receivedEvent.ProducedEnqueuedLatency}, {receivedEvent.EnqueuedReceivedLatency}, {receivedEvent.ProducedReceivedLatency}\n";
         }
 
-        return csvString;
+        return (csvString, averageEnqueueLatency, averageReceiveLatency);
     }
 
     public static Task InitializeEventHandler(PartitionInitializingEventArgs args)
