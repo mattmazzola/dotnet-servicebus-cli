@@ -27,7 +27,12 @@ public class LatencyTestCommand
             name: "--num-messages",
             description: "Number of Messages to Send",
             getDefaultValue: () => 20);
-        numOfMessagesToSendOption.AddAlias("-m");
+        numOfMessagesToSendOption.AddAlias("-n");
+
+        var maxEventCountPerBatchOption = new Option<int?>(
+            name: "--max-events-per-batch",
+            description: "Maximum number of events per batch");
+        maxEventCountPerBatchOption.AddAlias("-m");
 
         var consumerGroupOption = new Option<string>(
             name: "--consumer-group",
@@ -47,6 +52,7 @@ public class LatencyTestCommand
             blobStorageContainerNameOption,
             eventHubConnectionStringOption,
             numOfMessagesToSendOption,
+            maxEventCountPerBatchOption,
             consumerGroupOption,
             subscribeTimeOption
         };
@@ -56,6 +62,7 @@ public class LatencyTestCommand
             string blobStorageContainerName,
             string eventHubConnectionString,
             int numOfEvents,
+            int? maxEventCountPerBatch,
             string eventHubConsumerGroup,
             int subscribeTime
         ) =>
@@ -78,7 +85,6 @@ public class LatencyTestCommand
             await eventHubProcessor.StartProcessingAsync();
 
             // Create producer client
-
             var eventHubProducerClient = new EventHubProducerClient(eventHubConnectionString);
             Console.WriteLine($"Create ProducerClient for EventHub: {eventHubProducerClient.FullyQualifiedNamespace}");
 
@@ -89,10 +95,6 @@ public class LatencyTestCommand
             var roleId = Guid.NewGuid().ToString();
             var groupId = Guid.NewGuid().ToString();
             var agentSubscriptionFilterValue = Guid.NewGuid().ToString();
-
-            Console.WriteLine($"Sending {numOfEvents} events...");
-            var stopWatch = new Stopwatch();
-            stopWatch.Start();
 
             for (int i = 1; i <= numOfEvents; i++)
             {
@@ -112,12 +114,16 @@ public class LatencyTestCommand
                 eventsToSend.Enqueue(eventData);
             }
 
+            Console.WriteLine($"Sending {numOfEvents} events...");
+            var stopWatch = new Stopwatch();
+            stopWatch.Start();
+
             // https://github.com/Azure/azure-sdk-for-net/blob/main/sdk/eventhub/Azure.Messaging.EventHubs/samples/Sample04_PublishingEvents.md#creating-and-publishing-multiple-batches
             var batches = default(IEnumerable<EventDataBatch>);
 
             try
             {
-                batches = await BuildBatchesAsync(eventHubProducerClient, eventsToSend);
+                batches = await BuildBatchesAsync(eventHubProducerClient, eventsToSend, maxEventCountPerBatch);
 
                 foreach (var batch in batches)
                 {
@@ -160,6 +166,7 @@ public class LatencyTestCommand
         blobStorageContainerNameOption,
         eventHubConnectionStringOption,
         numOfMessagesToSendOption,
+        maxEventCountPerBatchOption,
         consumerGroupOption,
         subscribeTimeOption
         );
@@ -169,7 +176,8 @@ public class LatencyTestCommand
 
     private static async Task<IReadOnlyList<EventDataBatch>> BuildBatchesAsync(
         EventHubProducerClient producer,
-        Queue<EventData> queuedEvents
+        Queue<EventData> queuedEvents,
+        int? maxEventCountPerBatch
     )
     {
         var batches = new List<EventDataBatch>();
@@ -193,16 +201,23 @@ public class LatencyTestCommand
                 }
 
                 batches.Add(currentBatch);
-
-                // Create new empty batch
                 currentBatch = default;
             }
             else
             {
                 queuedEvents.Dequeue();
+
+                if (maxEventCountPerBatch != null && currentBatch.Count == maxEventCountPerBatch)
+                {
+                    Console.WriteLine($"The current batch has reached the limit of {maxEventCountPerBatch} events. Closing current batch and creating new empty batch.");
+
+                    batches.Add(currentBatch);
+                    currentBatch = default;
+                }
             }
         }
 
+        // If there are still items in the current batch, add it to those to be sent.
         if ((currentBatch != default) && (currentBatch.Count > 0))
         {
             batches.Add(currentBatch);
