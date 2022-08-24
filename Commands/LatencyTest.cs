@@ -123,12 +123,7 @@ public class LatencyTestCommand
 
             try
             {
-                batches = await BuildBatchesAsync(eventHubProducerClient, eventsToSend, maxEventCountPerBatch);
-
-                foreach (var batch in batches)
-                {
-                    await eventHubProducerClient.SendAsync(batch);
-                }
+                batches = await SendEvents(eventHubProducerClient, eventsToSend, maxEventCountPerBatch);
             }
             finally
             {
@@ -174,7 +169,7 @@ public class LatencyTestCommand
         return command;
     }
 
-    private static async Task<IReadOnlyList<EventDataBatch>> BuildBatchesAsync(
+    private static async Task<IReadOnlyList<EventDataBatch>> SendEvents(
         EventHubProducerClient producer,
         Queue<EventData> queuedEvents,
         int? maxEventCountPerBatch
@@ -186,7 +181,7 @@ public class LatencyTestCommand
         while (queuedEvents.Count > 0)
         {
             var eventData = queuedEvents.Peek();
-            currentBatch ??= (await producer.CreateBatchAsync().ConfigureAwait(false));
+            currentBatch ??= await producer.CreateBatchAsync();
 
             var isEventAddedToBatch = currentBatch.TryAdd(eventData);
             if (!isEventAddedToBatch)
@@ -197,9 +192,10 @@ public class LatencyTestCommand
                 }
                 else
                 {
-                    Console.WriteLine($"The current batch is full with {currentBatch.Count} events of size {currentBatch.SizeInBytes / 1024} KB. Closing current batch and creating new empty batch.");
+                    Console.WriteLine($"The current batch is full with {currentBatch.Count} events of size {currentBatch.SizeInBytes / 1024} KB. Sending current batch and creating new empty batch.");
                 }
 
+                await producer.SendAsync(currentBatch);
                 batches.Add(currentBatch);
                 currentBatch = default;
             }
@@ -211,6 +207,7 @@ public class LatencyTestCommand
                 {
                     Console.WriteLine($"The current batch has reached the limit of {maxEventCountPerBatch} events. Closing current batch and creating new empty batch.");
 
+                    await producer.SendAsync(currentBatch);
                     batches.Add(currentBatch);
                     currentBatch = default;
                 }
@@ -220,6 +217,7 @@ public class LatencyTestCommand
         // If there are still items in the current batch, add it to those to be sent.
         if ((currentBatch != default) && (currentBatch.Count > 0))
         {
+            await producer.SendAsync(currentBatch);
             batches.Add(currentBatch);
         }
 
