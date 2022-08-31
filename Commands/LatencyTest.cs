@@ -103,6 +103,8 @@ public class LatencyTestCommand
             {
                 var testEvent = new Event
                 {
+                    EventType = "PlayerChatEvent",
+                    Message = $"Chat Message {i}",
                     GameId = gameId,
                     TaskId = taskId,
                     TournamentId = tournamentId,
@@ -120,11 +122,9 @@ public class LatencyTestCommand
 
             stopWatchEventCreation.Stop();
 
-            Console.WriteLine($"Created {numOfEvents} events in {stopWatchEventCreation.Elapsed}");
-
             Console.WriteLine($"Sending {numOfEvents} events...");
-            var stopWatch = new Stopwatch();
-            stopWatch.Start();
+            var stopWatchSendReceive = new Stopwatch();
+            stopWatchSendReceive.Start();
 
             // https://github.com/Azure/azure-sdk-for-net/blob/main/sdk/eventhub/Azure.Messaging.EventHubs/samples/Sample04_PublishingEvents.md#creating-and-publishing-multiple-batches
             var batches = default(IEnumerable<EventDataBatch>);
@@ -148,13 +148,13 @@ public class LatencyTestCommand
 
             // Stop the processing
             await eventHubProcessor.StopProcessingAsync();
-            Console.WriteLine($"Sent and received {partitionIdToEvents.Values.SelectMany(x => x).Count()} events in {stopWatch.Elapsed.TotalSeconds} seconds.");
+            Console.WriteLine($"Sent and received {partitionIdToEvents.Values.SelectMany(x => x).Count()} events in {stopWatchSendReceive.Elapsed.TotalSeconds} seconds.");
 
             // Save Events
             var latencyTestResultsFileName = $"LatencyTest_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.csv";
             Console.WriteLine($"Writing {latencyTestResultsFileName} CSV file...");
 
-            var (csvString, averageEnqueueTimespan, averageReceiveTimespan) = GetCsvStringFromEventAnalysis();
+            var (csvString, averageEnqueueTimespan, averageEnqueueReceiveTimespan, averageReceiveTimespan) = GetCsvStringFromEventAnalysis();
             var currentDirectory = Directory.GetCurrentDirectory();
             var latencyTestResultsDirectory = Path.Combine(currentDirectory, "LatencyTestResults");
 
@@ -166,8 +166,11 @@ public class LatencyTestCommand
             var latencyTestResultsFilePath = Path.Combine(latencyTestResultsDirectory, latencyTestResultsFileName);
             File.WriteAllText(latencyTestResultsFilePath, csvString);
             Console.WriteLine($"Write file to {latencyTestResultsFilePath}");
-            Console.WriteLine($"Average Enqueue: {averageEnqueueTimespan}");
-            Console.WriteLine($"Average Receive: {averageReceiveTimespan}");
+            Console.WriteLine($"Created {numOfEvents} events in {stopWatchEventCreation.Elapsed}");
+            Console.WriteLine($"Average Latency:");
+            Console.WriteLine($"Produce-Enqueue:\t{averageEnqueueTimespan} (How long it took to send)");
+            Console.WriteLine($"Enqueue-Receive:\t{averageEnqueueReceiveTimespan} (How long it took to receive)");
+            Console.WriteLine($"Produce-Receive:\t{averageReceiveTimespan} (Total: Send - Receive Latency)");
         },
         blobStorageConnectionStringOption,
         blobStorageContainerNameOption,
@@ -193,7 +196,10 @@ public class LatencyTestCommand
         while (queuedEvents.Count > 0)
         {
             var eventData = queuedEvents.Peek();
-            currentBatch ??= await producer.CreateBatchAsync();
+            var partitionKey = eventData.Properties["gameId"].ToString();
+            currentBatch ??= await producer.CreateBatchAsync(new CreateBatchOptions {
+                PartitionKey = partitionKey,
+            });
 
             var isEventAddedToBatch = currentBatch.TryAdd(eventData);
             if (!isEventAddedToBatch)
@@ -236,28 +242,48 @@ public class LatencyTestCommand
         return batches;
     }
 
-    public static (string, TimeSpan, TimeSpan) GetCsvStringFromEventAnalysis()
+    public static (string, TimeSpan, TimeSpan, TimeSpan) GetCsvStringFromEventAnalysis()
     {
         // CSV Headers
-        var csvString = $"Event Index, Sequence Id, Event Id, Produced At, Enqueued At, Received At, Produced Enqueued Latency, Enqueued Received Latency, Produced Received Latency\n";
+        var csvString = $"Event Index, Partition Id, Sequence Id, Event Id, Produced At, Enqueued At, Received At, Produced Enqueued Latency, Enqueued Received Latency, Produced Received Latency\n";
 
-        // All events should only be from single partition since they all have game game id, but we get from all partititions anyways for completeness
+        // All events should only be from single partition since they all have game game id, but we get from all partitions anyways for completeness
+        var areEventsInMoreThanOnePartition = partitionIdToEvents.Keys.Count() > 1;
+        if (areEventsInMoreThanOnePartition)
+        {
+            Console.WriteLine($"WARNING: Events were received from different partitions. {string.Join(", ", partitionIdToEvents.Keys)}");
+        }
+
         var receivedEvents = partitionIdToEvents.Values.SelectMany(x => x);
         var averageEnqueueLatencyMs = receivedEvents
             .Select(re => re.ProducedEnqueuedLatency.TotalMilliseconds)
             .Average();
         var averageEnqueueLatency = TimeSpan.FromMilliseconds(averageEnqueueLatencyMs);
+
+        var averageEnqueueReceiveLatencyMs = receivedEvents
+            .Select(re => re.EnqueuedReceivedLatency.TotalMilliseconds)
+            .Average();
+        var averageEnqueueReceiveLatency = TimeSpan.FromMilliseconds(averageEnqueueReceiveLatencyMs);
+
         var averageReceiveLatencyMs = receivedEvents
             .Select(re => re.ProducedReceivedLatency.TotalMilliseconds)
             .Average();
         var averageReceiveLatency = TimeSpan.FromMilliseconds(averageReceiveLatencyMs);
 
-        foreach (var receivedEvent in receivedEvents)
+        foreach (var (partitionId, partitionEvents) in partitionIdToEvents)
         {
-            csvString += $"{receivedEvent.EventData.Properties["eventIndex"]}, {receivedEvent.EventData.SequenceNumber}, {receivedEvent.EventBody.Id}, {receivedEvent.EventBody.ProducedAtDatetime:0}, {receivedEvent.EventData.EnqueuedTime:O}, {receivedEvent.ReceivedDatetimeOffset:O}, {receivedEvent.ProducedEnqueuedLatency}, {receivedEvent.EnqueuedReceivedLatency}, {receivedEvent.ProducedReceivedLatency}\n";
-        }
+            foreach (var receivedEvent in partitionEvents)
+            {
+                csvString += $"{receivedEvent.EventData.Properties["eventIndex"]}, {partitionId}, {receivedEvent.EventData.SequenceNumber}, {receivedEvent.EventBody.Id}, {receivedEvent.EventBody.ProducedAtDatetime:0}, {receivedEvent.EventData.EnqueuedTime:O}, {receivedEvent.ReceivedDatetimeOffset:O}, {receivedEvent.ProducedEnqueuedLatency}, {receivedEvent.EnqueuedReceivedLatency}, {receivedEvent.ProducedReceivedLatency}\n";
+            }
+        };
 
-        return (csvString, averageEnqueueLatency, averageReceiveLatency);
+        return (
+            csvString,
+            averageEnqueueLatency,
+            averageEnqueueReceiveLatency,
+            averageReceiveLatency
+        );
     }
 
     public static Task InitializeEventHandler(PartitionInitializingEventArgs args)
@@ -279,7 +305,7 @@ public class LatencyTestCommand
         return Task.CompletedTask;
     }
 
-    public static async Task ProcessEventHandler(ProcessEventArgs eventArgs)
+    public static Task ProcessEventHandler(ProcessEventArgs eventArgs)
     {
         // Ensure there is entry in dictionary for given partition
         if (!partitionIdToEvents.ContainsKey(eventArgs.Partition.PartitionId))
@@ -297,11 +323,14 @@ public class LatencyTestCommand
         };
 
         partitionIdToEvents[eventArgs.Partition.PartitionId].Add(receivedEvent);
+
+        return Task.CompletedTask;
     }
 
     public static Task ProcessErrorHandler(ProcessErrorEventArgs eventArgs)
     {
-        Console.WriteLine($"\tERROR: {eventArgs.Exception}");
+        Console.WriteLine($"ProcessError: {eventArgs.Exception.Message}");
+        Console.WriteLine(eventArgs.Exception);
 
         return Task.CompletedTask;
     }

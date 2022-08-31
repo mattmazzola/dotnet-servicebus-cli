@@ -21,4 +21,6 @@ public class Event
     public string? GroupId { get; init; }
 
     public string? AgentSubscriptionFilterValue { get; init; } = string.Empty;
+
+    public string? Message { get; init; }
 }
